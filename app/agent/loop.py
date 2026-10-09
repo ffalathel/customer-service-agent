@@ -7,7 +7,7 @@ import anthropic
 from app.agent import tools
 from app.agent.classify import MODEL, classify_intent
 from app.agent.guardrails import detect_prompt_injection, redact_payment_details, requires_human_approval
-from app.data.store import get_order, save_trace
+from app.data.store import get_order, refunded_total, save_trace
 from app.models import Ticket, Trace
 from app.policy.kb import PolicyKB
 
@@ -19,7 +19,8 @@ ESCALATED_REPLY = "I've passed your ticket to a human agent who will follow up w
 SYSTEM = (
     "You are a customer support agent for an online store. The customer_id and order_id are given. "
     "Look up the order and search policy before acting. Use issue_refund only when policy allows it. "
-    "Escalate when unsure."
+    "Escalate when unsure. If the total refund the customer asks for in this ticket exceeds $50, "
+    "escalate instead of issuing any part of it."
 )
 
 
@@ -30,7 +31,7 @@ class AgentLoop:
     def resolve_ticket(self, ticket: Ticket) -> Trace:
         start = time.perf_counter()
         message = redact_payment_details(ticket.message)
-        steps, cost, text, escalated, refunded, category = [], 0.0, "", False, 0.0, "other"
+        steps, cost, text, escalated, staged, category = [], 0.0, "", False, [], "other"
         if detect_prompt_injection(message):
             steps, text, escalated = [{"type": "blocked_injection"}], BLOCKED_REPLY, None
         else:
@@ -39,18 +40,24 @@ class AgentLoop:
             messages = [{"role": "user", "content": (
                 f"customer_id: {ticket.customer_id}\norder_id: {ticket.order_id}\n\n{message}")}]
             for _ in range(MAX_TOOL_ITERATIONS):
-                r = self.client.messages.create(model=MODEL, max_tokens=1024, system=SYSTEM,
-                                                tools=tools.TOOL_SCHEMAS, messages=messages)
+                try:
+                    r = self.client.messages.create(model=MODEL, max_tokens=1024, system=SYSTEM,
+                                                    tools=tools.TOOL_SCHEMAS, messages=messages)
+                except anthropic.APIError as e:
+                    escalated = f"Model API error: {type(e).__name__}"
+                    break
                 cost += r.usage.input_tokens * INPUT_USD_PER_TOKEN + r.usage.output_tokens * OUTPUT_USD_PER_TOKEN
                 if r.stop_reason != "tool_use":
                     text = "".join(b.text for b in r.content if b.type == "text")
+                    if r.stop_reason == "max_tokens" or not text.strip():
+                        escalated = "No usable reply"
                     break
                 results = []
                 for b in (b for b in r.content if b.type == "tool_use"):
-                    result, why, refunded = self._run(ticket, b.name, b.input, refunded, steps)
-                    steps.append({"type": "tool_call", "name": b.name, "input": b.input, "result": result})
+                    result, why = self._run(ticket, b.name, b.input, staged, steps)
+                    if result.get("status") != "staged":
+                        steps.append({"type": "tool_call", "name": b.name, "input": b.input, "result": result})
                     if why is not None:
-                        why = why or "Escalated by agent."
                         escalated = why
                         if b.name != "escalate":
                             self._escalate(ticket, why, steps)
@@ -61,10 +68,14 @@ class AgentLoop:
                 messages += [{"role": "assistant", "content": r.content}, {"role": "user", "content": results}]
             else:
                 escalated = "Agent did not converge within the tool-call limit."
+            for order_id, amount, reason in ([] if escalated else staged):
+                steps.append({"type": "tool_call", "name": "issue_refund",
+                              "input": {"order_id": order_id, "amount": amount, "reason": reason},
+                              "result": tools.issue_refund(self.conn, order_id, amount, reason, ticket.id)})
             if escalated and not any(x.get("name") == "escalate" for x in steps):
                 self._escalate(ticket, escalated, steps)
         resolution = ("blocked" if escalated is None else "escalated" if escalated
-                      else "refunded" if refunded else "answered")
+                      else "refunded" if staged else "answered")
         trace = Trace(ticket.id, category, steps, resolution,
                       redact_payment_details(ESCALATED_REPLY if escalated else text),
                       cost, time.perf_counter() - start)
@@ -75,31 +86,34 @@ class AgentLoop:
         steps.append({"type": "tool_call", "name": "escalate", "input": {"summary": summary},
                       "result": tools.escalate(self.conn, ticket.id, summary)})
 
-    def _run(self, ticket, name, args, refunded, steps):
-        """Returns (result, escalation_reason_or_None, cumulative_refund)."""
+    def _run(self, ticket, name, args, staged, steps):
+        """Returns (result, escalation_reason_or_None). Refunds are only staged here."""
         try:
             if name == "lookup_order":
                 result = tools.lookup_order(self.conn, args["order_id"])
                 o = result["order"]
                 if not result["found"] or o["customer_id"] != ticket.customer_id:
-                    return {"found": False}, "Order not found or not owned by this customer.", refunded
-                return result, None, refunded
+                    return {"found": False}, "Order not found or not owned by this customer."
+                return result, None
             if name == "lookup_customer_history":
-                return tools.lookup_customer_history(self.conn, ticket.customer_id), None, refunded
+                return tools.lookup_customer_history(self.conn, ticket.customer_id), None
             if name == "search_policy":
-                return tools.search_policy(self.kb, args["query"]), None, refunded
+                return tools.search_policy(self.kb, args["query"]), None
             if name == "escalate":
-                return tools.escalate(self.conn, ticket.id, args["summary"]), args["summary"], refunded
+                why = args.get("summary") or "Escalated by agent."
+                return tools.escalate(self.conn, ticket.id, why), why
             if name == "issue_refund":
-                order, amount = get_order(self.conn, args["order_id"]), float(args["amount"])
+                order, amount = get_order(self.conn, args["order_id"]), round(float(args["amount"]), 2)
                 if not order or order.customer_id != ticket.customer_id or not 0 < amount <= order.total:
-                    return {"error": "invalid refund"}, "Invalid refund proposal.", refunded
-                total = round(refunded + amount, 2)
+                    return {"error": "invalid refund"}, "Invalid refund proposal."
+                total = round(sum(a for _, a, _ in staged) + refunded_total(self.conn, order.id) + amount, 2)
                 if requires_human_approval(total):
                     steps.append({"type": "guardrail", "rule": "refund_limit", "decision": "escalate", "amount": total})
                     return ({"status": "blocked"},
-                            f"Refund total ${total:.2f} exceeds the $50 human-approval threshold.", refunded)
-                return tools.issue_refund(self.conn, order.id, amount, args["reason"]), None, total
+                            f"Refund total ${total:.2f} exceeds the $50 human-approval threshold.")
+                staged.append((order.id, amount, args["reason"]))
+                steps.append({"type": "refund_staged", "order_id": order.id, "amount": amount})
+                return {"status": "staged", "order_id": order.id, "amount": amount}, None
         except (KeyError, TypeError, ValueError):
-            return {"error": "bad arguments"}, f"Malformed arguments for {name}.", refunded
-        return {"error": "unknown tool"}, f"Unknown tool {name}.", refunded
+            return {"error": "bad arguments"}, f"Malformed arguments for {name}."
+        return {"error": "unknown tool"}, f"Unknown tool {name}."

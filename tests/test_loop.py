@@ -7,7 +7,10 @@ import pytest
 from app.agent import loop as loop_mod
 from app.agent.loop import MAX_TOOL_ITERATIONS, AgentLoop
 from app.data.seed import seed_db
-from app.data.store import get_order, get_trace, init_db
+import anthropic
+import httpx
+
+from app.data.store import get_order, get_trace, init_db, refunded_total
 from app.models import Ticket
 from app.policy.kb import PolicyKB
 
@@ -88,7 +91,7 @@ def test_cumulative_refunds_escalate(env):
     r = tool("issue_refund", order_id=oid, amount=30, reason="x")
     tr = run(env, Client([r, r]), order_id=oid, customer_id=cust)
     issued = [s for s in tr.steps if s["type"] == "tool_call" and s["result"].get("status") == "issued"]
-    assert len(issued) == 1 and tr.resolution == "escalated"
+    assert not issued and tr.resolution == "escalated"
 
 
 def test_missing_order_escalates_without_fabrication(env):
@@ -128,10 +131,10 @@ def test_two_refund_blocks_in_one_response(env):
     oid, cust = big(env, 30)
     r = ("issue_refund", dict(order_id=oid, amount=30, reason="x"))
     tr = run(env, Client([multi(r, r)]), order_id=oid, customer_id=cust)
-    assert len(issued(tr)) == 1 and tr.resolution == "escalated"
+    assert not issued(tr) and tr.resolution == "escalated"
 
 
-@pytest.mark.parametrize("summary", ["", "needs human"])
+@pytest.mark.parametrize("summary", ["", None, "needs human"])
 def test_escalate_then_refund_same_response(env, summary):
     oid, cust = big(env, 30)
     c = Client([multi(("escalate", dict(ticket_id="x", summary=summary)),
@@ -153,3 +156,68 @@ def test_refund_on_other_customers_order_escalates(env):
     other = "cust_2" if cust != "cust_2" else "cust_3"
     tr = run(env, Client([tool("issue_refund", order_id=oid, amount=10, reason="x")]), order_id=oid, customer_id=other)
     assert tr.resolution == "escalated" and not issued(tr)
+
+
+def rf(oid, amount):
+    return ("issue_refund", dict(order_id=oid, amount=amount, reason="x"))
+
+
+def test_api_error_midway_escalates_with_no_refund(env):
+    oid, cust = big(env, 30)
+
+    class Boom(Client):
+        def create(self, **kw):
+            if self.calls == 1:
+                self.calls += 1
+                raise anthropic.APIConnectionError(request=httpx.Request("POST", "http://x"))
+            return super().create(**kw)
+
+    tr = run(env, Boom([tool("issue_refund", order_id=oid, amount=30, reason="x")]), order_id=oid, customer_id=cust)
+    assert tr.resolution == "escalated" and not issued(tr) and get_trace(env, "tkt_1").resolution == "escalated"
+    assert any("APIConnectionError" in s["input"]["summary"] for s in tr.steps if s.get("name") == "escalate")
+    assert refunded_total(env, oid) == 0
+
+
+def test_three_partial_refunds_over_limit_issue_nothing(env):
+    oid, cust = big(env, 30)
+    tr = run(env, Client([multi(rf(oid, 30), rf(oid, 30), rf(oid, 25))]), order_id=oid, customer_id=cust)
+    assert tr.resolution == "escalated" and not issued(tr) and refunded_total(env, oid) == 0
+
+
+def test_two_small_refunds_both_executed_after_loop(env):
+    oid, cust = big(env, 40)
+    tr = run(env, Client([multi(rf(oid, 20), rf(oid, 20)), text("done")]), order_id=oid, customer_id=cust)
+    assert tr.resolution == "refunded" and len(issued(tr)) == 2 and refunded_total(env, oid) == 40
+
+
+def test_amount_rounded_once(env):
+    oid, cust = big(env, 50)
+    tr = run(env, Client([tool("issue_refund", order_id=oid, amount=50.004, reason="x"), text("ok")]),
+             order_id=oid, customer_id=cust)
+    assert tr.resolution == "refunded" and issued(tr)[0]["result"]["amount"] == 50.0
+
+
+def test_amount_rounding_to_zero_escalates(env):
+    oid, cust = big(env, 30)
+    tr = run(env, Client([tool("issue_refund", order_id=oid, amount=0.004, reason="x")]), order_id=oid, customer_id=cust)
+    assert tr.resolution == "escalated" and not issued(tr)
+
+
+def test_order_ledger_blocks_second_ticket(env):
+    oid, cust = big(env, 60)
+    first = run(env, Client([tool("issue_refund", order_id=oid, amount=30, reason="x"), text("ok")]),
+                order_id=oid, customer_id=cust)
+    t = Ticket("tkt_2", cust, oid, "again", "open")
+    second = AgentLoop(env, PolicyKB(Path("app/policy/docs")),
+                       Client([tool("issue_refund", order_id=oid, amount=30, reason="x")])).resolve_ticket(t)
+    assert first.resolution == "refunded" and second.resolution == "escalated" and refunded_total(env, oid) == 30
+
+
+def test_max_tokens_escalates(env):
+    r = NS(content=[NS(type="text", text="half a sent")], stop_reason="max_tokens",
+           usage=NS(input_tokens=1, output_tokens=1))
+    assert run(env, Client([r])).resolution == "escalated"
+
+
+def test_empty_reply_escalates(env):
+    assert run(env, Client([text("  ")])).resolution == "escalated"

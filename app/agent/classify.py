@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Literal, get_args
 
@@ -34,7 +35,8 @@ def classify_intent(client: anthropic.Anthropic, message: str) -> IntentCategory
             tool_choice={"type": "tool", "name": "classify"},
             messages=[{"role": "user", "content": message}],
         )
-    except anthropic.APIError:
+    except anthropic.APIError as e:
+        logging.getLogger(__name__).warning("classify failed: %s", type(e).__name__)
         return "other"
     block = next((b for b in response.content if b.type == "tool_use"), None)
     category = block.input.get("category") if block else None

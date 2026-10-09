@@ -45,3 +45,8 @@ def test_get_unknown_ticket_404(api):
 def test_empty_message_422(api):
     r = api.post("/tickets", json={"customer_id": "cust_1", "message": ""})
     assert r.status_code == 422
+
+
+def test_card_number_in_order_id_422(api):
+    r = api.post("/tickets", json={"customer_id": "cust_1", "order_id": "4111 1111 1111 1111", "message": "hi"})
+    assert r.status_code == 422

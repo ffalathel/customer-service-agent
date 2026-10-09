@@ -69,3 +69,4 @@ def test_tool_schemas_match_function_names():
         assert schema["input_schema"]["type"] == "object"
         assert "conn" not in schema["input_schema"]["properties"]
         assert "kb" not in schema["input_schema"]["properties"]
+    assert TOOL_SCHEMAS[-1]["input_schema"]["properties"].keys() == {"summary"}

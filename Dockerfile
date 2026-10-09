@@ -9,4 +9,7 @@ COPY evals/ evals/
 COPY tests/ tests/
 COPY pytest.ini .
 
+RUN useradd -m app && mkdir -p /data && chown app /data
+USER app
+
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

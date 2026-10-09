@@ -40,3 +40,12 @@ def test_classify_intent_falls_back_to_other_on_unknown_category():
         return _tool_response("sales_pitch")
 
     assert classify_intent(_client(fake), "hi") == "other"
+
+
+def test_classify_logs_api_error(caplog):
+    def boom(**kw):
+        raise anthropic.APIConnectionError(request=httpx.Request("POST", "http://x"))
+
+    with caplog.at_level("WARNING"):
+        assert classify_intent(_client(boom), "hi") == "other"
+    assert "APIConnectionError" in caplog.text

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, customer_id TEXT, order
     message TEXT, status TEXT);
 CREATE TABLE IF NOT EXISTS traces (ticket_id TEXT PRIMARY KEY, category TEXT, steps TEXT,
     resolution TEXT, response TEXT, cost_usd REAL, latency_s REAL);
+CREATE TABLE IF NOT EXISTS refunds (order_id TEXT, ticket_id TEXT, amount REAL);
 """
 
 
@@ -53,3 +54,12 @@ def get_trace(conn, ticket_id: str) -> Trace | None:
     if not row:
         return None
     return Trace(row[0], row[1], json.loads(row[2]), row[3], row[4], row[5], row[6])
+
+
+def record_refund(conn, order_id: str, ticket_id: str, amount: float) -> None:
+    conn.execute("INSERT INTO refunds VALUES (?, ?, ?)", (order_id, ticket_id, amount))
+    conn.commit()
+
+
+def refunded_total(conn, order_id: str) -> float:
+    return conn.execute("SELECT COALESCE(SUM(amount), 0) FROM refunds WHERE order_id = ?", (order_id,)).fetchone()[0]

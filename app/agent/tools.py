@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from app.data.store import get_customer_orders, get_order
+from app.data.store import get_customer_orders, get_order, record_refund
 from app.policy.kb import PolicyKB
 
 
@@ -18,8 +18,8 @@ def search_policy(kb: PolicyKB, query: str) -> dict:
     return {"results": [{"title": d.title, "excerpt": d.text} for d in hits]}
 
 
-def issue_refund(conn, order_id: str, amount: float, reason: str) -> dict:
-    # ponytail: no DB write; the trace records refunds until a refunds table exists
+def issue_refund(conn, order_id: str, amount: float, reason: str, ticket_id: str = "") -> dict:
+    record_refund(conn, order_id, ticket_id, amount)
     return {"status": "issued", "order_id": order_id, "amount": amount}
 
 
@@ -76,8 +76,8 @@ TOOL_SCHEMAS = [
         "description": "Hand the ticket to a human agent with a summary of the case.",
         "input_schema": {
             "type": "object",
-            "properties": {"ticket_id": _STR, "summary": _STR},
-            "required": ["ticket_id", "summary"],
+            "properties": {"summary": _STR},
+            "required": ["summary"],
         },
     },
 ]

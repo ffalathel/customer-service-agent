@@ -22,9 +22,12 @@ agent = AgentLoop(conn, kb, anthropic.Anthropic())
 app = FastAPI()
 
 
+_ID = r"^[A-Za-z0-9_-]{1,64}$"
+
+
 class TicketIn(BaseModel):
-    customer_id: str
-    order_id: str | None = None
+    customer_id: str = Field(pattern=_ID)
+    order_id: str | None = Field(default=None, pattern=_ID)
     message: str = Field(min_length=1, max_length=5000)
 
 
