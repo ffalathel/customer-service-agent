@@ -83,3 +83,11 @@ def test_get_other_customers_ticket_404(api):
     assert api.get(f"/tickets/{tid}", params={"customer_id": "cust_2"}, headers=auth("cust_2")).status_code == 404
     assert api.get(f"/tickets/{tid}", params={"customer_id": "cust_1"}, headers=auth("cust_2")).status_code == 401
     assert api.get(f"/tickets/{tid}", params={"customer_id": "cust_1"}).status_code == 401
+
+
+def test_stored_ticket_message_has_no_card_number(api):
+    import app.main as main
+    r = api.post("/tickets", headers=auth("cust_1"),
+                 json={"customer_id": "cust_1", "message": "card 4111 1111 1111 1111 cvv 123, refund"})
+    row = main.conn.execute("SELECT message FROM tickets WHERE id = ?", (r.json()["ticket_id"],)).fetchone()
+    assert "4111" not in row[0] and "123" not in row[0]

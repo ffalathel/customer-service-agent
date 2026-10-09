@@ -8,6 +8,7 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.auth import verify
+from app.agent.guardrails import redact_payment_details
 from app.agent.loop import AgentLoop
 from app.data.seed import seed_db
 from app.data.store import get_trace, init_db, save_ticket
@@ -37,7 +38,7 @@ class TicketIn(BaseModel):
 def create_ticket(body: TicketIn, x_customer_token: str | None = Header(default=None)):
     if not x_customer_token or not verify(body.customer_id, x_customer_token, SECRET):
         raise HTTPException(status_code=401, detail="Invalid customer token")
-    ticket = Ticket(uuid.uuid4().hex, body.customer_id, body.order_id, body.message, "open")
+    ticket = Ticket(uuid.uuid4().hex, body.customer_id, body.order_id, redact_payment_details(body.message), "open")
     save_ticket(conn, ticket)
     trace = agent.resolve_ticket(ticket)
     return {"ticket_id": ticket.id, "resolution": trace.resolution, "response": trace.response}
