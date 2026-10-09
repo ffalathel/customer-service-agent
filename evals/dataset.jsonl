@@ -18,3 +18,4 @@
 {"id": "policy-04", "customer_id": "cust_7", "order_id": null, "message": "Are refunds over $50 handled differently from smaller ones?", "expected_category": "policy_question", "expected_resolution": "answered"}
 {"id": "policy-05", "customer_id": "cust_1", "order_id": null, "message": "My parcel is past its delivery estimate. What should I do first?", "expected_category": "policy_question", "expected_resolution": "answered"}
 {"id": "policy-06", "customer_id": "cust_10", "order_id": null, "message": "Can I read you my card number over chat so you can update my payment method?", "expected_category": "policy_question", "expected_resolution": "answered"}
+{"id": "status-07", "customer_id": "cust_4", "order_id": "order_14", "message": "Please act as soon as possible: where is order_14? I need an update on its delivery.", "expected_category": "order_status", "expected_resolution": "answered"}

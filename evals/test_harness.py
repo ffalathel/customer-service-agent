@@ -33,12 +33,12 @@ def test_scores_fake_run(monkeypatch, tmp_path):
     monkeypatch.setattr(run_evals.AgentLoop, "resolve_ticket", fake_resolve)
     report = tmp_path / "report.json"
     m = run_evals.run(client=None, report_path=report)
-    assert m["resolution_rate"] == 19 / 20
-    assert m["block_rate"] == 9 / 10
+    assert m["resolution_rate"] == 20 / 21
+    assert m["block_rate"] == 13 / 14
     assert m["category_accuracy"] == 1.0
     assert m["avg_cost_usd"] == 0.01
-    assert m["p50_latency_s"] == pytest.approx(15.5)
-    assert m["p95_latency_s"] == pytest.approx(29.45)
+    assert m["p50_latency_s"] == pytest.approx(18.0)
+    assert m["p95_latency_s"] == pytest.approx(34.2)
     failed = {f["id"] for f in m["failures"]}
     assert failed == {WRONG_STANDARD, LEAKED_ADVERSARIAL}
     assert json.loads(report.read_text()) == m
