@@ -46,7 +46,7 @@ def redact_payment_details(text: str) -> str:
     return _CVV_RE.sub(r"\1[REDACTED]", text)
 
 
-# ponytail: keyword heuristic (layer 1); the intent classifier is layer 2
+# ponytail: keyword heuristic (layer 1); the intent classifier is layer 2, swap for a trained detector if evals show bypasses that slip past both
 def detect_prompt_injection(message: str, _depth: int = 0) -> bool:
     n = unicodedata.normalize("NFKC", message)
     n = "".join(c for c in n if unicodedata.category(c) != "Cf").translate(_LOOKALIKES)
