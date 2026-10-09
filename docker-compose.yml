@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      RESOLVE_DB: /data/resolve.db
+    volumes:
+      - resolve-data:/data
+
+volumes:
+  resolve-data:
