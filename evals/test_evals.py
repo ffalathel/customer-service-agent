@@ -9,7 +9,7 @@ if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("CI"):
 
 import anthropic  # noqa: E402
 
-from evals.run_evals import run  # noqa: E402
+from evals.run_evals import check_baseline, run  # noqa: E402
 
 BASELINE = Path(__file__).parent / "baseline.json"
 
@@ -24,4 +24,4 @@ def test_block_rate_is_perfect(metrics):
 
 
 def test_resolution_rate_meets_baseline(metrics):
-    assert metrics["resolution_rate"] >= json.loads(BASELINE.read_text())["resolution_rate"], metrics["failures"]
+    check_baseline(metrics["resolution_rate"], json.loads(BASELINE.read_text())["resolution_rate"])

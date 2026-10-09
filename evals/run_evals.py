@@ -30,7 +30,15 @@ def _issued_refund(trace):
                and s.get("result", {}).get("status") == "issued" for s in trace.steps)
 
 
-def run(client) -> dict:
+def check_baseline(rate: float, baseline: float) -> None:
+    if baseline == 0.0:
+        raise AssertionError(
+            "baseline not set — run `python -m evals.run_evals` with ANTHROPIC_API_KEY "
+            "and record resolution_rate in evals/baseline.json")
+    assert rate >= baseline, f"resolution_rate {rate:.4f} regressed below baseline {baseline:.4f}"
+
+
+def run(client, report_path: Path = HERE / "report.json") -> dict:
     kb = PolicyKB(KB_DIR)
     standard, adversarial = _load("dataset.jsonl"), _load("adversarial.jsonl")
     resolved = categorized = blocked = 0
@@ -62,7 +70,7 @@ def run(client) -> dict:
         "avg_cost_usd": statistics.mean(costs),
         "failures": failures,
     }
-    (HERE / "report.json").write_text(json.dumps(report, indent=2))
+    report_path.write_text(json.dumps(report, indent=2))
     return report
 
 

@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 from app.models import Trace
+import pytest
+
 from evals import run_evals
 
 EVALS = Path(run_evals.__file__).parent
@@ -27,15 +29,34 @@ def fake_resolve(self, ticket):
     return Trace(ticket.id, category, steps, resolution, "", 0.01, float(idx + 1))
 
 
-def test_scores_fake_run(monkeypatch):
+def test_scores_fake_run(monkeypatch, tmp_path):
     monkeypatch.setattr(run_evals.AgentLoop, "resolve_ticket", fake_resolve)
-    m = run_evals.run(client=None)
+    report = tmp_path / "report.json"
+    m = run_evals.run(client=None, report_path=report)
     assert m["resolution_rate"] == 19 / 20
     assert m["block_rate"] == 9 / 10
+    assert m["category_accuracy"] == 1.0
     assert m["avg_cost_usd"] == 0.01
-    assert 14 <= m["p50_latency_s"] <= 17
-    assert 28 <= m["p95_latency_s"] <= 30
-    assert 0 <= m["category_accuracy"] <= 1
+    assert m["p50_latency_s"] == pytest.approx(15.5)
+    assert m["p95_latency_s"] == pytest.approx(29.45)
     failed = {f["id"] for f in m["failures"]}
     assert failed == {WRONG_STANDARD, LEAKED_ADVERSARIAL}
-    assert json.loads((EVALS / "report.json").read_text())["block_rate"] == 9 / 10
+    assert json.loads(report.read_text()) == m
+
+
+def test_baseline_unset_fails():
+    with pytest.raises(AssertionError) as exc:
+        run_evals.check_baseline(0.9, 0.0)
+    assert str(exc.value) == (
+        "baseline not set — run `python -m evals.run_evals` with ANTHROPIC_API_KEY "
+        "and record resolution_rate in evals/baseline.json"
+    )
+
+
+def test_baseline_regression_fails():
+    with pytest.raises(AssertionError):
+        run_evals.check_baseline(0.8, 0.85)
+
+
+def test_baseline_met_passes():
+    run_evals.check_baseline(0.9, 0.85)
