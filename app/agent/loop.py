@@ -1,0 +1,145 @@
+import json
+import re
+import sqlite3
+import threading
+import time
+
+import anthropic
+
+from app.agent import tools
+from app.agent.classify import MODEL, classify_intent
+from app.agent.guardrails import detect_prompt_injection, redact_payment_details, requires_human_approval
+from app.data.store import get_order, record_refunds, refunded_total, save_trace
+from app.models import Ticket, Trace
+from app.policy.kb import PolicyKB
+
+# Serializes refund transactions on the shared connection; the refunds_one_ticket trigger guards across processes.
+_REFUND_LOCK = threading.Lock()
+_REFUND_CLAIM_RE = re.compile(
+    r"\b(?:i|we)(?:'ve| have)\s+(?:\w+\s+)?(?:refunded|issued (?:a|your|the) refund|processed (?:a|your|the) refund)\b"
+    r"|\brefund (?:has been|was|is) (?:issued|processed|on its way)\b", re.I)
+MAX_TOOL_ITERATIONS = 6
+INPUT_USD_PER_TOKEN = 3 / 1_000_000
+OUTPUT_USD_PER_TOKEN = 15 / 1_000_000
+BLOCKED_REPLY = "Sorry, I can't help with that request."
+ESCALATED_REPLY = "I've passed your ticket to a human agent who will follow up with you."
+SYSTEM = (
+    "You are a customer support agent for an online store. The customer_id and order_id are given. "
+    "Look up the order and search policy before acting. Use issue_refund only when policy allows it. "
+    "Escalate when unsure. If the total refund the customer asks for in this ticket exceeds $50, "
+    "escalate instead of issuing any part of it."
+)
+
+
+class AgentLoop:
+    def __init__(self, conn: sqlite3.Connection, kb: PolicyKB, client: anthropic.Anthropic):
+        self.conn, self.kb, self.client = conn, kb, client
+
+    def resolve_ticket(self, ticket: Ticket) -> Trace:
+        start = time.perf_counter()
+        message = redact_payment_details(ticket.message)
+        steps, cost, text, escalated, staged, category = [], 0.0, "", False, [], "other"
+        blocked = "filter" if detect_prompt_injection(message) else None
+        if not blocked:
+            category = classify_intent(self.client, message)
+            steps.append({"type": "classify", "category": category})
+            blocked = "classifier" if category == "prompt_injection" else None
+        if blocked:
+            steps.append({"type": "blocked_injection", "source": blocked})
+            text, escalated = BLOCKED_REPLY, None
+        else:
+            messages = [{"role": "user", "content": (
+                f"customer_id: {ticket.customer_id}\norder_id: {ticket.order_id}\n\n{message}")}]
+            for _ in range(MAX_TOOL_ITERATIONS):
+                try:
+                    r = self.client.messages.create(model=MODEL, max_tokens=1024, system=SYSTEM,
+                                                    tools=tools.TOOL_SCHEMAS, messages=messages)
+                except anthropic.APIError as e:
+                    escalated = f"Model API error: {type(e).__name__}"
+                    break
+                cost += r.usage.input_tokens * INPUT_USD_PER_TOKEN + r.usage.output_tokens * OUTPUT_USD_PER_TOKEN
+                if r.stop_reason != "tool_use":
+                    text = "".join(b.text for b in r.content if b.type == "text")
+                    if r.stop_reason == "max_tokens" or not text.strip():
+                        escalated = "No usable reply"
+                    break
+                results = []
+                for b in (b for b in r.content if b.type == "tool_use"):
+                    result, why = self._run(ticket, b.name, b.input, staged, steps)
+                    if result.get("status") != "staged":
+                        steps.append({"type": "tool_call", "name": b.name, "input": b.input, "result": result})
+                    if why is not None:
+                        escalated = why
+                        if b.name != "escalate":
+                            self._escalate(ticket, why, steps)
+                        break
+                    results.append({"type": "tool_result", "tool_use_id": b.id, "content": json.dumps(result)})
+                if escalated:
+                    break
+                messages += [{"role": "assistant", "content": r.content}, {"role": "user", "content": results}]
+            else:
+                escalated = "Agent did not converge within the tool-call limit."
+            if not escalated and not staged and _REFUND_CLAIM_RE.search(text):
+                escalated = "Reply claimed a refund that was not issued."
+            with _REFUND_LOCK:
+                if not escalated and staged and not record_refunds(self.conn, ticket.id, staged):
+                    escalated = "Order was refunded by another ticket while this one was open."
+                    steps.append({"type": "guardrail", "rule": "already_refunded", "decision": "escalate",
+                                  "order_ids": sorted({o for o, _, _ in staged})})
+            for order_id, amount, reason in ([] if escalated else staged):
+                steps.append({"type": "tool_call", "name": "issue_refund",
+                              "input": {"order_id": order_id, "amount": amount, "reason": reason},
+                              "result": {"status": "issued", "order_id": order_id, "amount": amount}})
+            if escalated and not any(x.get("name") == "escalate" for x in steps):
+                self._escalate(ticket, escalated, steps)
+        resolution = ("blocked" if escalated is None else "escalated" if escalated
+                      else "refunded" if staged else "answered")
+        trace = Trace(ticket.id, category, steps, resolution,
+                      redact_payment_details(ESCALATED_REPLY if escalated else text),
+                      cost, time.perf_counter() - start)
+        save_trace(self.conn, trace)
+        return trace
+
+    def _escalate(self, ticket, summary, steps):
+        steps.append({"type": "tool_call", "name": "escalate", "input": {"summary": summary},
+                      "result": tools.escalate(self.conn, ticket.id, summary)})
+
+    def _run(self, ticket, name, args, staged, steps):
+        """Returns (result, escalation_reason_or_None). Refunds are only staged here."""
+        try:
+            if name == "lookup_order":
+                result = tools.lookup_order(self.conn, args["order_id"])
+                o = result["order"]
+                if not result["found"] or o["customer_id"] != ticket.customer_id:
+                    return {"found": False}, "Order not found or not owned by this customer."
+                return result, None
+            if name == "lookup_customer_history":
+                return tools.lookup_customer_history(self.conn, ticket.customer_id), None
+            if name == "search_policy":
+                return tools.search_policy(self.kb, args["query"]), None
+            if name == "escalate":
+                why = args.get("summary") or "Escalated by agent."
+                return tools.escalate(self.conn, ticket.id, why), why
+            if name == "issue_refund":
+                order, amount = get_order(self.conn, args["order_id"]), round(float(args["amount"]), 2)
+                if not order or order.customer_id != ticket.customer_id or not 0 < amount <= order.total:
+                    return {"error": "invalid refund"}, "Invalid refund proposal."
+                prior = refunded_total(self.conn, order.id)
+                if prior:
+                    steps.append({"type": "guardrail", "rule": "already_refunded", "decision": "escalate",
+                                  "order_id": order.id, "refunded": prior})
+                    return ({"status": "blocked"},
+                            f"Order {order.id} already has ${prior:.2f} refunded; a human must review further refunds.")
+                if round(sum(a for o, a, _ in staged if o == order.id) + amount, 2) > order.total:
+                    return {"error": "invalid refund"}, "Refunds would exceed the order total."
+                total = round(sum(a for _, a, _ in staged) + amount, 2)
+                if requires_human_approval(total):
+                    steps.append({"type": "guardrail", "rule": "refund_limit", "decision": "escalate", "amount": total})
+                    return ({"status": "blocked"},
+                            f"Refund total ${total:.2f} exceeds the $50 human-approval threshold.")
+                staged.append((order.id, amount, args["reason"]))
+                steps.append({"type": "refund_staged", "order_id": order.id, "amount": amount})
+                return {"status": "staged", "order_id": order.id, "amount": amount}, None
+        except (KeyError, TypeError, ValueError):
+            return {"error": "bad arguments"}, f"Malformed arguments for {name}."
+        return {"error": "unknown tool"}, f"Unknown tool {name}."

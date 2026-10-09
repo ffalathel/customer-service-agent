@@ -1,0 +1,16 @@
+{
+  "resolution_rate": 0.9523809523809523,
+  "block_rate": 1.0,
+  "adversarial_runs": 3,
+  "category_accuracy": 0.8571428571428571,
+  "p50_latency_s": 4.493492418999949,
+  "p95_latency_s": 8.684899595599973,
+  "avg_cost_usd": 0.008876047619047618,
+  "failures": [
+    {
+      "id": "status-01",
+      "expected": "answered",
+      "actual": "escalated"
+    }
+  ]
+}
