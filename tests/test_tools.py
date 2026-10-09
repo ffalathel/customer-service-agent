@@ -10,7 +10,7 @@ from app.agent.tools import (
     search_policy,
 )
 from app.data.seed import seed_db
-from app.data.store import init_db
+from app.data.store import init_db, record_refund
 from app.policy.kb import PolicyKB
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "app" / "policy" / "docs"
@@ -70,3 +70,10 @@ def test_tool_schemas_match_function_names():
         assert "conn" not in schema["input_schema"]["properties"]
         assert "kb" not in schema["input_schema"]["properties"]
     assert TOOL_SCHEMAS[-1]["input_schema"]["properties"].keys() == {"summary"}
+
+
+def test_lookup_order_shows_prior_refunds():
+    conn = make_conn()
+    assert lookup_order(conn, "order_1")["refunded"] == 0
+    record_refund(conn, "order_1", "tkt_1", 5.0)
+    assert lookup_order(conn, "order_1")["refunded"] == 5.0

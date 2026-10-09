@@ -221,3 +221,22 @@ def test_max_tokens_escalates(env):
 
 def test_empty_reply_escalates(env):
     assert run(env, Client([text("  ")])).resolution == "escalated"
+
+
+def test_refund_on_already_refunded_order_is_flagged(env):
+    oid, cust = big(env, 20)
+    run(env, Client([tool("issue_refund", order_id=oid, amount=10, reason="x"), text("ok")]),
+        order_id=oid, customer_id=cust)
+    t = Ticket("tkt_2", cust, oid, "again", "open")
+    second = AgentLoop(env, PolicyKB(Path("app/policy/docs")),
+                       Client([tool("issue_refund", order_id=oid, amount=5, reason="x")])).resolve_ticket(t)
+    assert second.resolution == "escalated" and not issued(second) and refunded_total(env, oid) == 10
+    assert any(s.get("rule") == "already_refunded" for s in second.steps)
+
+
+def test_staged_refunds_capped_at_order_total(env):
+    o = min((get_order(env, f"order_{i}") for i in range(1, 21)), key=lambda o: o.total)
+    half = round(o.total / 2 + 1, 2)
+    tr = run(env, Client([multi(rf(o.id, half), rf(o.id, half)), text("ok")]),
+             order_id=o.id, customer_id=o.customer_id)
+    assert o.total < 25 and tr.resolution == "escalated" and not issued(tr) and refunded_total(env, o.id) == 0

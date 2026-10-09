@@ -1,12 +1,14 @@
 from dataclasses import asdict
 
-from app.data.store import get_customer_orders, get_order, record_refund
+from app.data.store import get_customer_orders, get_order, record_refund, refunded_total
 from app.policy.kb import PolicyKB
 
 
 def lookup_order(conn, order_id: str) -> dict:
     order = get_order(conn, order_id)
-    return {"found": order is not None, "order": asdict(order) if order else None}
+    if not order:
+        return {"found": False, "order": None}
+    return {"found": True, "order": asdict(order), "refunded": refunded_total(conn, order_id)}
 
 
 def lookup_customer_history(conn, customer_id: str) -> dict:

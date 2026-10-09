@@ -13,6 +13,7 @@ Support agents with tool access can issue money back. The failure modes that mat
 ## What it does
 
 - Refunds strictly over $50.00 require human approval and are escalated. Exactly $50.00 is auto-approved. The check runs on the ticket's cumulative requested refund amount, not per tool call.
+- An order that already has an issued refund is flagged: any further refund request on it escalates to a human, and the order lookup shows the amount already refunded. Refunds on one order can never exceed its total.
 - Payment details (card numbers, CVV-like patterns) are redacted before any response or trace write.
 - Prompt injection is detected and the ticket is blocked before any tool runs. The block is recorded in the trace.
 - Every ticket stores a full trace in SQLite: each step, tool call with args and result, cost, and latency.
@@ -93,7 +94,7 @@ Bare `pytest` also collects `evals/` and makes paid model calls when `ANTHROPIC_
 
 ## Known limitations
 
-- No auth: `customer_id` is caller-asserted. Refunds are still capped by the per-order $50 gate.
+- No auth: `customer_id` is caller-asserted. Refunds are still capped at the order total, and any second refund on an order goes to a human.
 - One shared SQLite connection with no write lock (demo scale).
 - Injection detection is a keyword heuristic backed by the model's own judgment.
 

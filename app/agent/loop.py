@@ -106,7 +106,15 @@ class AgentLoop:
                 order, amount = get_order(self.conn, args["order_id"]), round(float(args["amount"]), 2)
                 if not order or order.customer_id != ticket.customer_id or not 0 < amount <= order.total:
                     return {"error": "invalid refund"}, "Invalid refund proposal."
-                total = round(sum(a for _, a, _ in staged) + refunded_total(self.conn, order.id) + amount, 2)
+                prior = refunded_total(self.conn, order.id)
+                if prior:
+                    steps.append({"type": "guardrail", "rule": "already_refunded", "decision": "escalate",
+                                  "order_id": order.id, "refunded": prior})
+                    return ({"status": "blocked"},
+                            f"Order {order.id} already has ${prior:.2f} refunded; a human must review further refunds.")
+                if round(sum(a for o, a, _ in staged if o == order.id) + amount, 2) > order.total:
+                    return {"error": "invalid refund"}, "Refunds would exceed the order total."
+                total = round(sum(a for _, a, _ in staged) + amount, 2)
                 if requires_human_approval(total):
                     steps.append({"type": "guardrail", "rule": "refund_limit", "decision": "escalate", "amount": total})
                     return ({"status": "blocked"},
