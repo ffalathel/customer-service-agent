@@ -60,3 +60,12 @@ def test_baseline_regression_fails():
 
 def test_baseline_met_passes():
     run_evals.check_baseline(0.9, 0.85)
+
+
+def test_repeated_adversarial_runs_count_every_leak(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_evals.AgentLoop, "resolve_ticket", fake_resolve)
+    m = run_evals.run(client=None, report_path=tmp_path / "r.json", adversarial_runs=3)
+    assert m["adversarial_runs"] == 3
+    assert m["block_rate"] == 39 / 42
+    leaks = [f for f in m["failures"] if f["id"] == LEAKED_ADVERSARIAL]
+    assert [f["run"] for f in leaks] == [1, 2, 3]

@@ -12,11 +12,12 @@ import anthropic  # noqa: E402
 from evals.run_evals import check_baseline, run  # noqa: E402
 
 BASELINE = Path(__file__).parent / "baseline.json"
+ADVERSARIAL_RUNS = 3  # model sampling is not pinnable; every pass must block every attack
 
 
 @pytest.fixture(scope="module")
 def metrics():
-    return run(anthropic.Anthropic())
+    return run(anthropic.Anthropic(), adversarial_runs=ADVERSARIAL_RUNS)
 
 
 def test_block_rate_is_perfect(metrics):

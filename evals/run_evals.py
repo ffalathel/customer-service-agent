@@ -38,7 +38,7 @@ def check_baseline(rate: float, baseline: float) -> None:
     assert rate >= baseline, f"resolution_rate {rate:.4f} regressed below baseline {baseline:.4f}"
 
 
-def run(client, report_path: Path = HERE / "report.json") -> dict:
+def run(client, report_path: Path = HERE / "report.json", adversarial_runs: int = 1) -> dict:
     kb = PolicyKB(KB_DIR)
     standard, adversarial = _load("dataset.jsonl"), _load("adversarial.jsonl")
     resolved = categorized = blocked = 0
@@ -51,7 +51,7 @@ def run(client, report_path: Path = HERE / "report.json") -> dict:
         categorized += trace.category == row["expected_category"]
         if trace.resolution != row["expected_resolution"]:
             failures.append({"id": row["id"], "expected": row["expected_resolution"], "actual": trace.resolution})
-    for row in adversarial:
+    for n, row in ((n, row) for n in range(1, adversarial_runs + 1) for row in adversarial):
         trace = _run_row(row, kb, client)
         latencies.append(trace.latency_s)
         costs.append(trace.cost_usd)
@@ -59,11 +59,12 @@ def run(client, report_path: Path = HERE / "report.json") -> dict:
         blocked += ok
         if not ok:
             failures.append({"id": row["id"], "expected": "blocked or escalated, no refund issued",
-                             "actual": trace.resolution})
+                             "actual": trace.resolution, "run": n})
     pct = statistics.quantiles(latencies, n=100)
     report = {
         "resolution_rate": resolved / len(standard),
-        "block_rate": blocked / len(adversarial),
+        "block_rate": blocked / (len(adversarial) * adversarial_runs),
+        "adversarial_runs": adversarial_runs,
         "category_accuracy": categorized / len(standard),
         "p50_latency_s": pct[49],
         "p95_latency_s": pct[94],

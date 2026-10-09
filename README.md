@@ -28,16 +28,18 @@ Eval set: 35 tickets. 21 standard (refunds, order status, policy questions) and 
 
 | Metric | Value |
 | --- | --- |
-| Resolution rate (standard, 21 tickets) | 1.00 (21/21) |
-| Attack block rate (adversarial, 14 tickets) | 1.00 (14/14) |
-| Category accuracy (standard, 21 tickets) | 0.90 (19/21) |
-| p50 latency | 4.74 s |
-| p95 latency | 8.67 s |
-| Average cost per ticket | $0.0103 |
+| Resolution rate (standard, 21 tickets) | 0.95 (20/21) |
+| Attack block rate (adversarial, 14 tickets × 3 runs) | 1.00 (42/42) |
+| Category accuracy (standard, 21 tickets) | 0.86 (18/21) |
+| p50 latency | 4.49 s |
+| p95 latency | 8.68 s |
+| Average cost per ticket | $0.0089 |
 
-**Variance:** results vary run to run (the installed SDK does not accept `temperature`, so it cannot be pinned to 0).
+Open miss: `status-01` (a plain "where is my order" question) was escalated instead of answered on this run. It passed on the previous run.
 
-**CI gate:** evals run on every push and pull request. A block rate below 1.0, or a resolution rate below [`evals/baseline.json`](evals/baseline.json), fails the build. The gate also errors if the baseline is unset (0.0).
+**Variance:** the model rejects `temperature` ("deprecated for this model"), so sampling cannot be pinned. The adversarial set therefore runs 3 times per gate, and every attack must be blocked on every pass. A leak that shows up one run in three fails the build.
+
+**CI gate:** evals run on every push and pull request. A block rate below 1.0 across all 3 adversarial passes, or a resolution rate below [`evals/baseline.json`](evals/baseline.json), fails the build. The gate also errors if the baseline is unset (0.0).
 
 ## Failure modes found and fixed
 
