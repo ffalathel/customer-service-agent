@@ -17,7 +17,7 @@ Support agents with tool access can issue money back. The failure modes that mat
 - Payment details (card numbers, CVV-like patterns) are redacted before any response or trace write.
 - Prompt injection is checked in two layers, and a hit blocks the ticket before any tool runs (the trace records `source`: `filter` or `classifier`). Layer 1 is a regex filter on normalized text (NFKC, zero-width characters dropped, Cyrillic/Greek look-alikes mapped, spaced-out letters, one level of base64). Layer 2 is the intent classifier's `prompt_injection` category, which covers other languages and requests to reveal the system prompt.
 - Ticket endpoints need an HMAC customer token (`X-Customer-Token`) matching `customer_id`. Reading a ticket also needs the owning `customer_id`; unknown and foreign tickets both return 404.
-- Refund issuing runs under a process-wide lock that re-checks the ledger first, so two tickets on one order cannot both refund. A reply that claims a refund that was never issued is escalated instead of sent.
+- A ticket's refunds are written to the ledger in one all-or-nothing transaction. A SQLite trigger (`refunds_one_ticket`) rejects a refund on an order another ticket already refunded, so two tickets on one order cannot both refund, even across processes; the losing ticket escalates instead. A reply that claims a refund that was never issued is escalated instead of sent.
 - Every ticket stores a full trace in SQLite: each step, tool call with args and result, cost, and latency.
 
 ## Reliability report
@@ -100,8 +100,7 @@ Bare `pytest` also collects `evals/` and makes paid model calls when `ANTHROPIC_
 
 ## Known limitations
 
-- Process-wide refund lock, single process only. One shared SQLite connection with no write lock (demo scale).
-- Customer tokens are minted from a shared secret; there is no login flow, expiry, or rotation.
+- One shared SQLite connection (demo scale). Refund writes are serialized by a process-wide lock; other writes (tickets, traces) are not.- Customer tokens are minted from a shared secret; there is no login flow, expiry, or rotation.
 - Injection detection is a regex filter plus a classifier, both best-effort; novel disguises can still get through to the model.
 
 ## What I'd do differently
