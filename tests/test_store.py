@@ -1,5 +1,6 @@
 from app.data.seed import seed_db
-from app.data.store import get_customer, get_customer_orders, get_order, get_trace, init_db, save_trace
+from app.data.store import (get_customer, get_customer_orders, get_order, get_trace, init_db, record_refunds,
+                            refunded_total, save_trace)
 from app.models import Order, Trace
 
 
@@ -39,3 +40,10 @@ def test_save_and_get_trace_round_trip():
     save_trace(conn, trace)
     assert get_trace(conn, "t_1") == trace
     assert get_trace(conn, "missing") is None
+
+
+def test_record_refunds_one_ticket_per_order_all_or_nothing():
+    conn = init_db(":memory:")
+    assert record_refunds(conn, "t1", [("o1", 5.0, "x"), ("o1", 2.0, "y")])
+    assert not record_refunds(conn, "t2", [("o2", 3.0, "x"), ("o1", 1.0, "y")])
+    assert refunded_total(conn, "o1") == 7.0 and refunded_total(conn, "o2") == 0

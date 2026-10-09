@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from app.data.store import get_customer_orders, get_order, record_refund, refunded_total
+from app.data.store import get_customer_orders, get_order, refunded_total
 from app.policy.kb import PolicyKB
 
 
@@ -18,11 +18,6 @@ def lookup_customer_history(conn, customer_id: str) -> dict:
 def search_policy(kb: PolicyKB, query: str) -> dict:
     hits = [d for d in kb.search(query) if d.score > 0]
     return {"results": [{"title": d.title, "excerpt": d.text} for d in hits]}
-
-
-def issue_refund(conn, order_id: str, amount: float, reason: str, ticket_id: str = "") -> dict:
-    record_refund(conn, order_id, ticket_id, amount)
-    return {"status": "issued", "order_id": order_id, "amount": amount}
 
 
 def escalate(conn, ticket_id: str, summary: str) -> dict:

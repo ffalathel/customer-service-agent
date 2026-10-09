@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS tickets (id TEXT PRIMARY KEY, customer_id TEXT, order
 CREATE TABLE IF NOT EXISTS traces (ticket_id TEXT PRIMARY KEY, category TEXT, steps TEXT,
     resolution TEXT, response TEXT, cost_usd REAL, latency_s REAL);
 CREATE TABLE IF NOT EXISTS refunds (order_id TEXT, ticket_id TEXT, amount REAL);
+CREATE TRIGGER IF NOT EXISTS refunds_one_ticket BEFORE INSERT ON refunds
+WHEN EXISTS (SELECT 1 FROM refunds WHERE order_id = NEW.order_id AND ticket_id != NEW.ticket_id)
+BEGIN SELECT RAISE(ABORT, 'order already refunded by another ticket'); END;
 """
 
 
@@ -62,9 +65,14 @@ def get_trace(conn, ticket_id: str) -> Trace | None:
     return Trace(row[0], row[1], json.loads(row[2]), row[3], row[4], row[5], row[6])
 
 
-def record_refund(conn, order_id: str, ticket_id: str, amount: float) -> None:
-    conn.execute("INSERT INTO refunds VALUES (?, ?, ?)", (order_id, ticket_id, amount))
-    conn.commit()
+def record_refunds(conn, ticket_id: str, refunds) -> bool:
+    """All-or-nothing; False if another ticket already refunded one of the orders."""
+    try:
+        with conn:
+            conn.executemany("INSERT INTO refunds VALUES (?, ?, ?)", [(o, ticket_id, a) for o, a, _ in refunds])
+        return True
+    except sqlite3.IntegrityError:
+        return False
 
 
 def refunded_total(conn, order_id: str) -> float:

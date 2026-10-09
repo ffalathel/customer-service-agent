@@ -4,13 +4,12 @@ from pathlib import Path
 from app.agent.tools import (
     TOOL_SCHEMAS,
     escalate,
-    issue_refund,
     lookup_customer_history,
     lookup_order,
     search_policy,
 )
 from app.data.seed import seed_db
-from app.data.store import init_db, record_refund
+from app.data.store import init_db, record_refunds
 from app.policy.kb import PolicyKB
 
 DOCS_DIR = Path(__file__).resolve().parent.parent / "app" / "policy" / "docs"
@@ -51,11 +50,6 @@ def test_search_policy_drops_zero_score_docs():
     assert result == {"results": []}
 
 
-def test_issue_refund_shape():
-    result = issue_refund(make_conn(), "order_1", 12.0, "damaged")
-    assert result == {"status": "issued", "order_id": "order_1", "amount": 12.0}
-
-
 def test_escalate_shape():
     result = escalate(make_conn(), "ticket_1", "customer angry")
     assert result == {"status": "escalated", "ticket_id": "ticket_1", "summary": "customer angry"}
@@ -75,5 +69,5 @@ def test_tool_schemas_match_function_names():
 def test_lookup_order_shows_prior_refunds():
     conn = make_conn()
     assert lookup_order(conn, "order_1")["refunded"] == 0
-    record_refund(conn, "order_1", "tkt_1", 5.0)
+    record_refunds(conn, "tkt_1", [("order_1", 5.0, "x")])
     assert lookup_order(conn, "order_1")["refunded"] == 5.0

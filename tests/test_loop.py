@@ -10,7 +10,7 @@ from app.data.seed import seed_db
 import anthropic
 import httpx
 
-from app.data.store import get_order, get_trace, init_db, record_refund, refunded_total
+from app.data.store import get_order, get_trace, init_db, record_refunds, refunded_total
 from app.models import Ticket
 from app.policy.kb import PolicyKB
 
@@ -257,7 +257,7 @@ def test_refund_race_other_ticket_refunded_first_escalates(env):
     class Racy(Client):
         def create(self, **kw):
             if self.calls == 1:  # the other ticket's refund lands between our gate and our issue
-                record_refund(env, oid, "other_tkt", 5.0)
+                record_refunds(env, "other_tkt", [(oid, 5.0, "x")])
             return super().create(**kw)
 
     c = Racy([tool("issue_refund", order_id=oid, amount=10, reason="x"), text("Done")])

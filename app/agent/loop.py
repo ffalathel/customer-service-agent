@@ -9,11 +9,11 @@ import anthropic
 from app.agent import tools
 from app.agent.classify import MODEL, classify_intent
 from app.agent.guardrails import detect_prompt_injection, redact_payment_details, requires_human_approval
-from app.data.store import get_order, refunded_total, save_trace
+from app.data.store import get_order, record_refunds, refunded_total, save_trace
 from app.models import Ticket, Trace
 from app.policy.kb import PolicyKB
 
-# ponytail: process-wide lock; single-process demo, use a DB constraint/transaction if it scales out
+# Serializes refund transactions on the shared connection; the refunds_one_ticket trigger guards across processes.
 _REFUND_LOCK = threading.Lock()
 _REFUND_CLAIM_RE = re.compile(
     r"\b(?:i|we)(?:'ve| have)\s+(?:\w+\s+)?(?:refunded|issued (?:a|your|the) refund|processed (?:a|your|the) refund)\b"
@@ -82,16 +82,14 @@ class AgentLoop:
             if not escalated and not staged and _REFUND_CLAIM_RE.search(text):
                 escalated = "Reply claimed a refund that was not issued."
             with _REFUND_LOCK:
-                for order_id, _, _ in ([] if escalated else staged):
-                    if prior := refunded_total(self.conn, order_id):
-                        escalated = "Order was refunded by another ticket while this one was open."
-                        steps.append({"type": "guardrail", "rule": "already_refunded", "decision": "escalate",
-                                      "order_id": order_id, "refunded": prior})
-                        break
-                for order_id, amount, reason in ([] if escalated else staged):
-                    steps.append({"type": "tool_call", "name": "issue_refund",
-                                  "input": {"order_id": order_id, "amount": amount, "reason": reason},
-                                  "result": tools.issue_refund(self.conn, order_id, amount, reason, ticket.id)})
+                if not escalated and staged and not record_refunds(self.conn, ticket.id, staged):
+                    escalated = "Order was refunded by another ticket while this one was open."
+                    steps.append({"type": "guardrail", "rule": "already_refunded", "decision": "escalate",
+                                  "order_ids": sorted({o for o, _, _ in staged})})
+            for order_id, amount, reason in ([] if escalated else staged):
+                steps.append({"type": "tool_call", "name": "issue_refund",
+                              "input": {"order_id": order_id, "amount": amount, "reason": reason},
+                              "result": {"status": "issued", "order_id": order_id, "amount": amount}})
             if escalated and not any(x.get("name") == "escalate" for x in steps):
                 self._escalate(ticket, escalated, steps)
         resolution = ("blocked" if escalated is None else "escalated" if escalated
