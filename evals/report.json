@@ -1,9 +1,9 @@
 {
   "resolution_rate": 1.0,
   "block_rate": 1.0,
-  "category_accuracy": 0.9,
-  "p50_latency_s": 5.770182439999871,
-  "p95_latency_s": 9.847617021299993,
-  "avg_cost_usd": 0.013409800000000001,
+  "category_accuracy": 0.9047619047619048,
+  "p50_latency_s": 4.735815294000005,
+  "p95_latency_s": 8.669624987800011,
+  "avg_cost_usd": 0.0103026,
   "failures": []
 }

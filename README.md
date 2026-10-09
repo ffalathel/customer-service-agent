@@ -15,23 +15,25 @@ Support agents with tool access can issue money back. The failure modes that mat
 - Refunds strictly over $50.00 require human approval and are escalated. Exactly $50.00 is auto-approved. The check runs on the ticket's cumulative requested refund amount, not per tool call.
 - An order that already has an issued refund is flagged: any further refund request on it escalates to a human, and the order lookup shows the amount already refunded. Refunds on one order can never exceed its total.
 - Payment details (card numbers, CVV-like patterns) are redacted before any response or trace write.
-- Prompt injection is detected and the ticket is blocked before any tool runs. The block is recorded in the trace.
+- Prompt injection is checked in two layers, and a hit blocks the ticket before any tool runs (the trace records `source`: `filter` or `classifier`). Layer 1 is a regex filter on normalized text (NFKC, zero-width characters dropped, Cyrillic/Greek look-alikes mapped, spaced-out letters, one level of base64). Layer 2 is the intent classifier's `prompt_injection` category, which covers other languages and requests to reveal the system prompt.
+- Ticket endpoints need an HMAC customer token (`X-Customer-Token`) matching `customer_id`. Reading a ticket also needs the owning `customer_id`; unknown and foreign tickets both return 404.
+- Refund issuing runs under a process-wide lock that re-checks the ledger first, so two tickets on one order cannot both refund. A reply that claims a refund that was never issued is escalated instead of sent.
 - Every ticket stores a full trace in SQLite: each step, tool call with args and result, cost, and latency.
 
 ## Reliability report
 
 Numbers below come from [`evals/report.json`](evals/report.json), produced by `python -m evals.run_evals` on the committed code.
 
-Eval set: 30 tickets. 20 standard (refunds, order status, policy questions) and 10 adversarial (4 prompt injection, 3 social engineering, 3 excessive refund demands).
+Eval set: 35 tickets. 21 standard (refunds, order status, policy questions) and 14 adversarial (8 prompt injection, 3 social engineering, 3 excessive refund demands).
 
 | Metric | Value |
 | --- | --- |
-| Resolution rate (standard, 20 tickets) | 1.00 (20/20) |
-| Attack block rate (adversarial, 10 tickets) | 1.00 (10/10) |
-| Category accuracy (standard, 20 tickets) | 0.90 (18/20) |
-| p50 latency | 5.77 s |
-| p95 latency | 9.85 s |
-| Average cost per ticket | $0.0134 |
+| Resolution rate (standard, 21 tickets) | 1.00 (21/21) |
+| Attack block rate (adversarial, 14 tickets) | 1.00 (14/14) |
+| Category accuracy (standard, 21 tickets) | 0.90 (19/21) |
+| p50 latency | 4.74 s |
+| p95 latency | 8.67 s |
+| Average cost per ticket | $0.0103 |
 
 **Variance:** results vary run to run (the installed SDK does not accept `temperature`, so it cannot be pinned to 0).
 
@@ -70,14 +72,16 @@ input sanitization (injection detection, payment redaction) → intent classific
 ```sh
 git clone <repo-url> resolve
 cd resolve
-cp .env.example .env        # set ANTHROPIC_API_KEY
+cp .env.example .env        # set ANTHROPIC_API_KEY and RESOLVE_SECRET (required by docker compose up)
 docker compose up           # API on http://localhost:8000
 ```
 
-Create a ticket:
+Create a ticket. The token is issued by whatever logs the customer in; here you mint one by hand with the same secret:
 
 ```sh
-curl -s -X POST localhost:8000/tickets -H 'content-type: application/json' \
+export RESOLVE_SECRET=<same value as in .env>
+TOKEN=$(python -m app.auth cust_1)
+curl -s -X POST localhost:8000/tickets -H 'content-type: application/json' -H "X-Customer-Token: $TOKEN" \
   -d '{"customer_id":"cust_1","order_id":"order_1","message":"where is my order"}'
 ```
 
@@ -94,9 +98,9 @@ Bare `pytest` also collects `evals/` and makes paid model calls when `ANTHROPIC_
 
 ## Known limitations
 
-- No auth: `customer_id` is caller-asserted. Refunds are still capped at the order total, and any second refund on an order goes to a human.
-- One shared SQLite connection with no write lock (demo scale).
-- Injection detection is a keyword heuristic backed by the model's own judgment.
+- Process-wide refund lock, single process only. One shared SQLite connection with no write lock (demo scale).
+- Customer tokens are minted from a shared secret; there is no login flow, expiry, or rotation.
+- Injection detection is a regex filter plus a classifier, both best-effort; novel disguises can still get through to the model.
 
 ## What I'd do differently
 
