@@ -1,7 +1,7 @@
 import json
 import sqlite3
 
-from app.models import Customer, Order, Trace
+from app.models import Customer, Order, Ticket, Trace
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, name TEXT, email TEXT);
@@ -38,6 +38,12 @@ def get_customer(conn, customer_id: str) -> Customer | None:
 def get_customer_orders(conn, customer_id: str) -> list[Order]:
     rows = conn.execute("SELECT * FROM orders WHERE customer_id = ?", (customer_id,))
     return [_order(r) for r in rows]
+
+
+def save_ticket(conn, ticket: Ticket) -> None:
+    conn.execute("INSERT OR REPLACE INTO tickets VALUES (?, ?, ?, ?, ?)",
+                 (ticket.id, ticket.customer_id, ticket.order_id, ticket.message, ticket.status))
+    conn.commit()
 
 
 def save_trace(conn, trace: Trace) -> None:
