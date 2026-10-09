@@ -87,6 +87,8 @@ curl -s -X POST localhost:8000/tickets -H 'content-type: application/json' -H "X
   -d '{"customer_id":"cust_1","order_id":"order_1","message":"where is my order"}'
 ```
 
+Live demo: `./demo.sh` (needs Docker and `ANTHROPIC_API_KEY` in `.env`) opens an interactive page on http://localhost:8000. Write tickets as any seeded customer, or use the presets (refunds, a card number, someone else's order, injection attacks), and watch the real agent's trace, reply, latency and cost. Refunds show up in the order table, and "Reset store" clears them. The demo server (`demo/server.py`) runs the agent on its own in-memory store with no customer auth, so it is bound to localhost and is not the production API.
+
 Run the evals (real model calls, a few minutes):
 
 ```sh
