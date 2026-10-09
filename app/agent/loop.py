@@ -49,7 +49,8 @@ class AgentLoop:
                 for b in (b for b in r.content if b.type == "tool_use"):
                     result, why, refunded = self._run(ticket, b.name, b.input, refunded, steps)
                     steps.append({"type": "tool_call", "name": b.name, "input": b.input, "result": result})
-                    if why:
+                    if why is not None:
+                        why = why or "Escalated by agent."
                         escalated = why
                         if b.name != "escalate":
                             self._escalate(ticket, why, steps)

@@ -113,3 +113,43 @@ def test_card_number_never_persisted(env):
     run(env, c, "my card is 4111 1111 1111 1111")
     tr = get_trace(env, "tkt_1")
     assert "4111" not in json.dumps(tr.steps) + tr.response and tr.resolution == "answered"
+
+
+def multi(*blocks):
+    return NS(content=[NS(type="tool_use", id=f"t{i}", name=n, input=a) for i, (n, a) in enumerate(blocks)],
+              stop_reason="tool_use", usage=NS(input_tokens=100, output_tokens=20))
+
+
+def issued(tr):
+    return [s for s in tr.steps if s["type"] == "tool_call" and s["result"].get("status") == "issued"]
+
+
+def test_two_refund_blocks_in_one_response(env):
+    oid, cust = big(env, 30)
+    r = ("issue_refund", dict(order_id=oid, amount=30, reason="x"))
+    tr = run(env, Client([multi(r, r)]), order_id=oid, customer_id=cust)
+    assert len(issued(tr)) == 1 and tr.resolution == "escalated"
+
+
+@pytest.mark.parametrize("summary", ["", "needs human"])
+def test_escalate_then_refund_same_response(env, summary):
+    oid, cust = big(env, 30)
+    c = Client([multi(("escalate", dict(ticket_id="x", summary=summary)),
+                      ("issue_refund", dict(order_id=oid, amount=30, reason="x"))), text("done")])
+    tr = run(env, c, order_id=oid, customer_id=cust)
+    assert tr.resolution == "escalated" and not issued(tr) and c.calls == 1
+
+
+@pytest.mark.parametrize("amount", [0, -5, 10_000])
+def test_invalid_refund_amount_escalates(env, amount):
+    oid, cust = big(env, 30)
+    tr = run(env, Client([tool("issue_refund", order_id=oid, amount=amount, reason="x")]),
+             order_id=oid, customer_id=cust)
+    assert tr.resolution == "escalated" and not issued(tr)
+
+
+def test_refund_on_other_customers_order_escalates(env):
+    oid, cust = big(env, 30)
+    other = "cust_2" if cust != "cust_2" else "cust_3"
+    tr = run(env, Client([tool("issue_refund", order_id=oid, amount=10, reason="x")]), order_id=oid, customer_id=other)
+    assert tr.resolution == "escalated" and not issued(tr)
