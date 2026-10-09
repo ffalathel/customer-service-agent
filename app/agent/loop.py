@@ -1,5 +1,7 @@
 import json
+import re
 import sqlite3
+import threading
 import time
 
 import anthropic
@@ -11,6 +13,11 @@ from app.data.store import get_order, refunded_total, save_trace
 from app.models import Ticket, Trace
 from app.policy.kb import PolicyKB
 
+# ponytail: process-wide lock; single-process demo, use a DB constraint/transaction if it scales out
+_REFUND_LOCK = threading.Lock()
+_REFUND_CLAIM_RE = re.compile(
+    r"\b(?:i|we)(?:'ve| have)\s+(?:\w+\s+)?(?:refunded|issued (?:a|your|the) refund|processed (?:a|your|the) refund)\b"
+    r"|\brefund (?:has been|was|is) (?:issued|processed|on its way)\b", re.I)
 MAX_TOOL_ITERATIONS = 6
 INPUT_USD_PER_TOKEN = 3 / 1_000_000
 OUTPUT_USD_PER_TOKEN = 15 / 1_000_000
@@ -32,11 +39,15 @@ class AgentLoop:
         start = time.perf_counter()
         message = redact_payment_details(ticket.message)
         steps, cost, text, escalated, staged, category = [], 0.0, "", False, [], "other"
-        if detect_prompt_injection(message):
-            steps, text, escalated = [{"type": "blocked_injection"}], BLOCKED_REPLY, None
-        else:
+        blocked = "filter" if detect_prompt_injection(message) else None
+        if not blocked:
             category = classify_intent(self.client, message)
             steps.append({"type": "classify", "category": category})
+            blocked = "classifier" if category == "prompt_injection" else None
+        if blocked:
+            steps.append({"type": "blocked_injection", "source": blocked})
+            text, escalated = BLOCKED_REPLY, None
+        else:
             messages = [{"role": "user", "content": (
                 f"customer_id: {ticket.customer_id}\norder_id: {ticket.order_id}\n\n{message}")}]
             for _ in range(MAX_TOOL_ITERATIONS):
@@ -68,10 +79,19 @@ class AgentLoop:
                 messages += [{"role": "assistant", "content": r.content}, {"role": "user", "content": results}]
             else:
                 escalated = "Agent did not converge within the tool-call limit."
-            for order_id, amount, reason in ([] if escalated else staged):
-                steps.append({"type": "tool_call", "name": "issue_refund",
-                              "input": {"order_id": order_id, "amount": amount, "reason": reason},
-                              "result": tools.issue_refund(self.conn, order_id, amount, reason, ticket.id)})
+            if not escalated and not staged and _REFUND_CLAIM_RE.search(text):
+                escalated = "Reply claimed a refund that was not issued."
+            with _REFUND_LOCK:
+                for order_id, _, _ in ([] if escalated else staged):
+                    if prior := refunded_total(self.conn, order_id):
+                        escalated = "Order was refunded by another ticket while this one was open."
+                        steps.append({"type": "guardrail", "rule": "already_refunded", "decision": "escalate",
+                                      "order_id": order_id, "refunded": prior})
+                        break
+                for order_id, amount, reason in ([] if escalated else staged):
+                    steps.append({"type": "tool_call", "name": "issue_refund",
+                                  "input": {"order_id": order_id, "amount": amount, "reason": reason},
+                                  "result": tools.issue_refund(self.conn, order_id, amount, reason, ticket.id)})
             if escalated and not any(x.get("name") == "escalate" for x in steps):
                 self._escalate(ticket, escalated, steps)
         resolution = ("blocked" if escalated is None else "escalated" if escalated

@@ -49,3 +49,7 @@ def test_classify_logs_api_error(caplog):
     with caplog.at_level("WARNING"):
         assert classify_intent(_client(boom), "hi") == "other"
     assert "APIConnectionError" in caplog.text
+
+
+def test_classify_accepts_prompt_injection():
+    assert classify_intent(_client(lambda **kw: _tool_response("prompt_injection")), "x") == "prompt_injection"
