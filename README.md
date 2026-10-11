@@ -105,6 +105,4 @@ Bare `pytest` also collects `evals/` and makes paid model calls when `ANTHROPIC_
 - One shared SQLite connection (demo scale). Refund writes are serialized by a process-wide lock; other writes (tickets, traces) are not.- Customer tokens are minted from a shared secret; there is no login flow, expiry, or rotation.
 - Injection detection is a regex filter plus a classifier, both best-effort; novel disguises can still get through to the model.
 
-## What I'd do differently
 
-[Fill in after building — e.g. what broke, what you'd redesign, what you'd add with more time.]
